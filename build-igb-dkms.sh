@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Variables
+NAME="igb"
+VERSION="${1:-5.19.10}"
+BASE_URL="https://github.com/intel/ethernet-linux-igb/releases/download"
+TARBALL="${NAME}-${VERSION}.tar.gz"
+URL="${BASE_URL}/v${VERSION}/${TARBALL}"
+ARCHITECTURE="all"
+
+WORKDIR="$(mktemp -d)/build-${NAME}-${VERSION}"
+BUILDDIR="$(pwd)/build-${NAME}-${VERSION}"
+PKGROOT="${WORKDIR}/pkgroot"
+SRCDIR="${PKGROOT}/usr/src/${NAME}-${VERSION}"
+SCRIPTDIR="${WORKDIR}/scripts"
+
+# Check our dependencies
+for cmd in curl tar fpm dkms; do
+  if ! command -v "$cmd" >/dev/null; then
+    echo "Missing dependency: $cmd"
+    exit 1
+  fi
+done
+
+# =========================
+# Cleanup + setup
+# =========================
+mkdir -p "$SRCDIR" "$SCRIPTDIR"
+
+pushd "$WORKDIR" >/dev/null
+
+# Download tarball
+echo "Downloading ${URL}..."
+curl --silent -L -o "$TARBALL" "$URL"
+
+# Extract
+echo "Extracting..."
+tar -xzf "$TARBALL" --strip-components=1 -C "$SRCDIR"
+
+# DKMS config
+echo "Creating dkms.conf..."
+cat >"${SRCDIR}/dkms.conf" <<EOF
+PACKAGE_NAME="${NAME}"
+PACKAGE_VERSION="${VERSION}"
+
+BUILT_MODULE_NAME[0]="${NAME}"
+DEST_MODULE_LOCATION[0]="/updates/dkms"
+
+AUTOINSTALL="yes"
+
+MAKE[0]="make -C src"
+CLEAN="make -C src clean"
+EOF
+
+# postinst
+cat >"${SCRIPTDIR}/postinst" <<EOF
+#!/bin/bash
+set -e
+
+dkms add -m ${NAME} -v ${VERSION} 2>/dev/null || true
+dkms build -m ${NAME} -v ${VERSION}
+dkms install -m ${NAME} -v ${VERSION}
+
+exit 0
+EOF
+
+chmod +x "${SCRIPTDIR}/postinst"
+
+# prerm
+cat >"${SCRIPTDIR}/prerm" <<EOF
+#!/bin/bash
+set -e
+
+dkms remove -m ${NAME} -v ${VERSION} --all 2>/dev/null || true
+
+exit 0
+EOF
+
+chmod +x "${SCRIPTDIR}/prerm"
+
+# Build package
+echo "Building Debian package..."
+
+fpm -s dir -t deb \
+  -n ${NAME}-dkms \
+  -v ${VERSION} \
+  --description "Intel igb network driver (DKMS)" \
+  --license "GPLv2" \
+  --depends dkms \
+  --depends build-essential \
+  --depends linux-headers-amd64 \
+  --architecture ${ARCHITECTURE} \
+  --after-install "${SCRIPTDIR}/postinst" \
+  --before-remove "${SCRIPTDIR}/prerm" \
+  -C "${PKGROOT}" \
+  .
+
+echo "Move the artifact to the build directory"
+mkdir -p "${BUILDDIR}"
+mv -v "${WORKDIR}/${NAME}-dkms_${VERSION}_${ARCHITECTURE}.deb" "${BUILDDIR}"
+popd >/dev/null
+rm -rf "${WORKDIR}"
+
+echo ""
+echo "Package built:"
+cd "${BUILDDIR}"
+ls -1 *.deb
