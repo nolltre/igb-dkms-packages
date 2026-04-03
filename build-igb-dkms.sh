@@ -15,7 +15,7 @@ LATEST_RELEASE=$(curl -s https://api.github.com/repos/intel/ethernet-linux-igb/r
 VERSION=$(echo "${LATEST_RELEASE}" | jq -r .tag_name | tr -d v)
 URL=$(echo "${LATEST_RELEASE}" | jq -r '.assets[].browser_download_url')
 TARBALL=$(echo "${LATEST_RELEASE}" | jq -r '.assets[].name')
-ARCHITECTURE="all"
+ARCHITECTURE="amd64"
 
 WORKDIR="$(mktemp -d)/build-${NAME}-${VERSION}"
 BUILDDIR="$(pwd)/build-${NAME}-${VERSION}"
@@ -87,7 +87,7 @@ fpm -s dir -t deb \
   --license "GPLv2" \
   --depends dkms \
   --depends build-essential \
-  --depends linux-headers-amd64 \
+  --depends linux-headers-${ARCHITECTURE} \
   --architecture ${ARCHITECTURE} \
   --after-install "${SCRIPTDIR}/postinst" \
   --before-remove "${SCRIPTDIR}/prerm" \
