@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Check our dependencies
+for cmd in curl tar fpm dkms jq; do
+  if ! command -v "$cmd" >/dev/null; then
+    echo "Missing dependency: $cmd"
+    exit 1
+  fi
+done
+
 # Variables
 NAME="igb"
-VERSION="${1:-5.19.10}"
-BASE_URL="https://github.com/intel/ethernet-linux-igb/releases/download"
-TARBALL="${NAME}-${VERSION}.tar.gz"
-URL="${BASE_URL}/v${VERSION}/${TARBALL}"
+LATEST_RELEASE=$(curl -s https://api.github.com/repos/intel/ethernet-linux-igb/releases/latest)
+VERSION=$(echo "${LATEST_RELEASE}" | jq -r .tag_name | tr -d v)
+URL=$(echo "${LATEST_RELEASE}" | jq -r '.assets[].browser_download_url')
+TARBALL=$(echo "${LATEST_RELEASE}" | jq -r '.assets[].name')
 ARCHITECTURE="all"
 
 WORKDIR="$(mktemp -d)/build-${NAME}-${VERSION}"
@@ -15,28 +23,18 @@ PKGROOT="${WORKDIR}/pkgroot"
 SRCDIR="${PKGROOT}/usr/src/${NAME}-${VERSION}"
 SCRIPTDIR="${WORKDIR}/scripts"
 
-# Check our dependencies
-for cmd in curl tar fpm dkms; do
-  if ! command -v "$cmd" >/dev/null; then
-    echo "Missing dependency: $cmd"
-    exit 1
-  fi
-done
+# Setup
+mkdir -p "${SRCDIR}" "${SCRIPTDIR}"
 
-# =========================
-# Cleanup + setup
-# =========================
-mkdir -p "$SRCDIR" "$SCRIPTDIR"
-
-pushd "$WORKDIR" >/dev/null
+pushd "${WORKDIR}" >/dev/null
 
 # Download tarball
 echo "Downloading ${URL}..."
-curl --silent -L -o "$TARBALL" "$URL"
+curl --silent -L -o "${TARBALL}" "${URL}"
 
 # Extract
 echo "Extracting..."
-tar -xzf "$TARBALL" --strip-components=1 -C "$SRCDIR"
+tar -xzf "${TARBALL}" --strip-components=1 -C "${SRCDIR}"
 
 # DKMS config
 echo "Creating dkms.conf..."
@@ -98,8 +96,9 @@ fpm -s dir -t deb \
 
 echo "Move the artifact to the build directory"
 mkdir -p "${BUILDDIR}"
-mv -v "${WORKDIR}/${NAME}-dkms_${VERSION}_${ARCHITECTURE}.deb" "${BUILDDIR}"
+mv "${WORKDIR}/${NAME}-dkms_${VERSION}_${ARCHITECTURE}.deb" "${BUILDDIR}"
 popd >/dev/null
+echo "Removing temporary directory..."
 rm -rf "${WORKDIR}"
 
 echo ""
