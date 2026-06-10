@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 # Check our dependencies
 for cmd in curl tar fpm dkms jq; do
@@ -9,12 +9,22 @@ for cmd in curl tar fpm dkms jq; do
   fi
 done
 
+# Check if we want the git version
+if [ -n "$1" -a "$1" = "git" ]; then
+  URL="https://github.com/intel/ethernet-linux-igb/archive/refs/heads/main.zip"
+  TARBALL=$(basename "${URL}")
+  VERSION=git
+else
+  LATEST_RELEASE=$(curl -s https://api.github.com/repos/intel/ethernet-linux-igb/releases/latest)
+  VERSION=$(echo "${LATEST_RELEASE}" | jq -r .tag_name | tr -d v)
+  URL=$(echo "${LATEST_RELEASE}" | jq -r '.assets[].browser_download_url')
+  TARBALL=$(echo "${LATEST_RELEASE}" | jq -r '.assets[].name')
+fi
+
+set -u
+
 # Variables
 NAME="igb"
-LATEST_RELEASE=$(curl -s https://api.github.com/repos/intel/ethernet-linux-igb/releases/latest)
-VERSION=$(echo "${LATEST_RELEASE}" | jq -r .tag_name | tr -d v)
-URL=$(echo "${LATEST_RELEASE}" | jq -r '.assets[].browser_download_url')
-TARBALL=$(echo "${LATEST_RELEASE}" | jq -r '.assets[].name')
 ARCHITECTURE="amd64"
 
 WORKDIR="$(mktemp -d)/build-${NAME}-${VERSION}"
@@ -34,7 +44,23 @@ curl --silent -L -o "${TARBALL}" "${URL}"
 
 # Extract
 echo "Extracting..."
-tar -xzf "${TARBALL}" --strip-components=1 -C "${SRCDIR}"
+case "${TARBALL}" in
+*.zip)
+  SRCDIR=$(mktemp -d)
+  unzip "${TARBALL}" -d "${SRCDIR}"
+  VERSION=$(cd "${SRCDIR}/ethernet-linux-igb-main" && grep "Version: " igb.spec | sed 's/Version: \(.*\)/\1/')
+  OLD_SRC_DIR="${SRCDIR}/ethernet-linux-igb-main"
+  export VERSION
+  SRCDIR="${PKGROOT}/usr/src/${NAME}-${VERSION}"
+  mkdir -p "${SRCDIR}"
+  mv "${OLD_SRC_DIR}/"* "${SRCDIR}"
+  rmdir "${OLD_SRC_DIR}"
+  rmdir "${PKGROOT}/usr/src/${NAME}-git"
+  ;;
+*.tar.gz)
+  tar -xzf "${TARBALL}" --strip-components=1 -C "${SRCDIR}"
+  ;;
+esac
 
 # DKMS config
 echo "Creating dkms.conf..."
@@ -43,11 +69,12 @@ PACKAGE_NAME="${NAME}"
 PACKAGE_VERSION="${VERSION}"
 
 BUILT_MODULE_NAME[0]="${NAME}"
+BUILT_MODULE_LOCATION[0]="src"
 DEST_MODULE_LOCATION[0]="/updates/dkms"
 
 AUTOINSTALL="yes"
 
-MAKE[0]="make -C src"
+MAKE[0]="make -C \${kernel_source_dir} KVERSION=\$kernelver BUILD_KERNEL=\$kernelver M=/var/lib/dkms/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build/src modules"
 CLEAN="make -C src clean"
 EOF
 
@@ -71,6 +98,8 @@ cat >"${SCRIPTDIR}/prerm" <<EOF
 set -e
 
 dkms remove -m ${NAME} -v ${VERSION} --all 2>/dev/null || true
+make -C /usr/src/${NAME}-${VERSION}/src clean || true
+rm -f /usr/src/${NAME}-${VERSION}/src/kcompat_generated_defs.h || true
 
 exit 0
 EOF
